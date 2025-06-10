@@ -1155,7 +1155,7 @@
                     code: code,
                     frequency: parseInt(frequency),
                     beatType: beatType,
-                    audioLength: audioBufferLength
+                    saveLength: saveLengthInput.value
                 };
                 
                 // Convert to URI-encoded JSON string
@@ -1198,7 +1198,7 @@
                     code: data.code,
                     frequency: parseInt(data.frequency),
                     beatType: data.beatType,
-                    audioLength: data.audioLength || null
+                    saveLength: saveLengthInput.value
                 };
             } catch (error) {
                 console.error('Error parsing ID:', error);
