@@ -476,6 +476,7 @@
         beatTypeSelect.addEventListener('change', updateBeatType);
         copyDolchanButton.addEventListener('click', copyForDolchan);
         copyEnBeatButton.addEventListener('click', copyForEnBeat);
+        saveLengthInput.addEventListener('change', updateUrl);
 
         const types = ['oscilloscope', 'spectrum', 'spectrumLog'];
         let currentTypeIndex = 0;
@@ -1155,7 +1156,7 @@
                     code: code,
                     frequency: parseInt(frequency),
                     beatType: beatType,
-                    saveLength: saveLengthInput.value // <-- Add this line
+                    saveLength: saveLengthInput.value
                 };
                 const jsonStr = JSON.stringify(data);
                 const encoded = encodeURIComponent(jsonStr);
@@ -1216,6 +1217,9 @@
                         sampleRate = data.frequency;
                         beatType = data.beatType;
                         beatTypeSelect.value = data.beatType;
+                        if (data.saveLength) {
+                            saveLengthInput.value = data.saveLength; // <-- add this line
+                        }
                         if (data.audioFileName) {
                             audioFileLabel.textContent = data.audioFileName;
                         }
