@@ -279,9 +279,10 @@
     <div class="controls">
         <label for="beatType">Beat Type:</label>
         <select id="beatType">
-            <option value="bytebeat">Bytebeat</option>
+            <option value="bytebeat">ByteBeat</option>
             <option value="signed_bytebeat">Signed</option>
-            <option value="floatbeat">Floatbeat</option>
+            <option value="floatbeat">FloatBeat</option>
+            <option value="funcbeat">FuncBeat</option>
         </select>
         <label for="saveLength">Save Length:</label>
         <input type="text" id="saveLength" value="2**20" placeholder="Enter math or value">
@@ -692,113 +693,164 @@
             const el = document.getElementById(elementID);
         }
 
+                        let lastFuncbeatCode = null;
+                let userFunc = null;
+
+
         function audioProcess(e) {
             const outputL = e.outputBuffer.getChannelData(0);
             const outputR = e.outputBuffer.getChannelData(1);
             let formula;
+            let isFuncBeat = (beatType === 'funcbeat');
+
             try {
-            formula = new Function('t', 'audio', 'wild', 'return ' + editor.getValue());
-            lastValidFormula = formula;
-            clearError();
+
+                if (isFuncBeat) {
+                    let code = editor.getValue();
+                    if (lastFuncbeatCode !== code || !userFunc) {
+                        // Only re-evaluate if code changed
+                        let funcFactory = new Function(code);
+                        userFunc = funcFactory();
+                        if (typeof userFunc !== 'function') throw new Error('FuncBeat: code must return a function');
+                        lastFuncbeatCode = code;
+                        lastValidFormula = userFunc;
+                        clearError();
+                    }
+                }  else {
+                    formula = new Function('t', 'audio', 'wild', 'return ' + editor.getValue());
+                    lastValidFormula = formula;
+                    clearError();
+                }
             } catch (error) {
-            showError('Bytebeat Error: ' + error.message);
-            formula = lastValidFormula || ((t) => [0, 0]);
+                showError('Bytebeat Error: ' + error.message);
+                if (isFuncBeat) {
+                    userFunc = lastValidFormula || ((t, S) => 0);
+                } else {
+                    formula = lastValidFormula || ((t) => [0, 0]);
+                }
             }
+
             const bufferSize = outputL.length;
             const frequencyRatio = sampleRate / audioContext.sampleRate;
 
             try {
-            for (let i = 0; i < bufferSize; i++) {
-                const t = floor(phase * frequencyRatio);
+                for (let i = 0; i < bufferSize; i++) {
+                    const t = floor(phase * frequencyRatio);
 
-                // Smooth t value
-                smoothT += (t - smoothT) * smoothingFactor;
-                const currentT = floor(smoothT);
+                    // Smooth t value
+                    smoothT += (t - smoothT) * smoothingFactor;
+                    const currentT = floor(smoothT);
 
-                let result;
-                try {
-                if (currentT !== lastT) {
-                    lastT = currentT;
-                    for (let key in variableStore) {
-                    if (key.startsWith('this.')) {
-                        variableStore[key] += 1;
-                    }
-                    }
-                    variableStore.lastRandom = Math.random();
-                }
+                    let valueL, valueR;
 
-                const handler = {
-                    get: function (target, prop) {
-                    if (prop.startsWith('this.')) {
-                        if (!(prop in target)) {
-                        target[prop] = 0;
+                    if (isFuncBeat) {
+                        // For funcbeat, t is "time in seconds", S is sampleRate
+                        // User function may use any parameter names
+                        // Use audioBufferDataL and audioBufferDataR for stereo
+                        window.audio = [
+                            audioBufferDataL && t < audioBufferLength ? audioBufferDataL[t] : 0,
+                            audioBufferDataR && t < audioBufferLength ? audioBufferDataR[t] : 0
+                        ];
+                        let out;
+                        try {
+                            out = userFunc(t / sampleRate, sampleRate);
+                        } catch (error) {
+                            handleFormulaError(error);
+                            out = lastValidFormula ? lastValidFormula(t / sampleRate, sampleRate) : 0;
                         }
-                        return target[prop];
+
+                    if (Array.isArray(out) && out.length === 2) {
+                        valueL = Math.max(-1, Math.min(1, out[0])) / 2;
+                        valueR = Math.max(-1, Math.min(1, out[1])) / 2;
+                    } else {
+                        valueL = valueR = Math.max(-1, Math.min(1, out)) / 2;
                     }
-                    return target[prop];
-                    },
-                    set: function (target, prop, value) {
-                    if (prop.startsWith('this.')) {
-                        target[prop] = value;
+                    } else {
+                        let result;
+                        try {
+                            if (currentT !== lastT) {
+                                lastT = currentT;
+                                for (let key in variableStore) {
+                                    if (key.startsWith('this.')) {
+                                        variableStore[key] += 1;
+                                    }
+                                }
+                                variableStore.lastRandom = Math.random();
+                            }
+
+                            const handler = {
+                                get: function (target, prop) {
+                                    if (prop.startsWith('this.')) {
+                                        if (!(prop in target)) {
+                                            target[prop] = 0;
+                                        }
+                                        return target[prop];
+                                    }
+                                    return target[prop];
+                                },
+                                set: function (target, prop, value) {
+                                    if (prop.startsWith('this.')) {
+                                        target[prop] = value;
+                                    }
+                                    return true;
+                                }
+                            };
+
+                            const proxy = new Proxy(variableStore, handler);
+
+                            // Use audioBufferDataL and audioBufferDataR for stereo
+                            const audio = [
+                                audioBufferDataL && t < audioBufferLength ? audioBufferDataL[t] : 0,
+                                audioBufferDataR && t < audioBufferLength ? audioBufferDataR[t] : 0
+                            ];
+
+                            // Evaluate formula with 'wild' for channel index
+                            result = formula.call(proxy, t, audio, 0);
+                            if (editor.getValue().includes('wild')) {
+                                result = [
+                                    formula.call(proxy, t, audio, 0),
+                                    formula.call(proxy, t, audio, 1)
+                                ];
+                            }
+                        } catch (error) {
+                            handleFormulaError(error);
+                            result = lastValidFormula ? lastValidFormula(t) : [0, 0];
+                        }
+
+                        if (Array.isArray(result) && result.length === 2) {
+                            valueL = processValue(result[0]) / 2;
+                            valueR = processValue(result[1]) / 2;
+                        } else {
+                            valueL = valueR = processValue(result) / 2;
+                        }
                     }
-                    return true;
-                    }
-                };
 
-                const proxy = new Proxy(variableStore, handler);
+                    outputL[i] = valueL;
+                    outputR[i] = valueR;
 
-                // Use audioBufferDataL and audioBufferDataR for stereo
-                const audio = [
-                    audioBufferDataL && t < audioBufferLength ? audioBufferDataL[t] : 0,
-                    audioBufferDataR && t < audioBufferLength ? audioBufferDataR[t] : 0
-                ];
+                    const oscIndex = t / speedMultiplier & 1023;
+                    oscilloscopeDataL[oscIndex] = valueL + .5;
+                    oscilloscopeDataR[oscIndex] = valueR + .5;
 
-                // Evaluate formula with 'wild' for channel index
-                result = formula.call(proxy, t, audio, 0);
-                if (editor.getValue().includes('wild')) {
-                    result = [
-                    formula.call(proxy, t, audio, 0),
-                    formula.call(proxy, t, audio, 1)
-                    ];
+                    phase += playDirection * speedMultiplier;
                 }
-                } catch (error) {
-                handleFormulaError(error);
-                result = lastValidFormula ? lastValidFormula(t) : [0, 0];
-                }
-
-                let valueL, valueR;
-
-                if (Array.isArray(result) && result.length === 2) {
-                valueL = processValue(result[0])/2;
-                valueR = processValue(result[1])/2;
-                } else {
-                valueL = valueR = processValue(result)/2;
-                }
-
-                outputL[i] = valueL;
-                outputR[i] = valueR;
-
-                const oscIndex = t / speedMultiplier & 1023;
-                oscilloscopeDataL[oscIndex] = valueL + .5;
-                oscilloscopeDataR[oscIndex] = valueR + .5;
-
-                phase += playDirection * speedMultiplier;
-            }
             } catch (error) {
-            showError('Bytebeat Error: ' + error.message);
+                showError('Bytebeat Error: ' + error.message);
             }
         }
 
         function processValue(value) {
             switch (beatType) {
-            case 'bytebeat':
-                return (value & 255) / 128 - 1;
-            case 'signed_bytebeat':
-                return ((value + 128) & 255) / 128 - 1;
-            case 'floatbeat':
-                return Math.max(-1, Math.min(1, value));
-            default:
-                return 0;
+                case 'bytebeat':
+                    return (value & 255) / 128 - 1;
+                case 'signed_bytebeat':
+                    return ((value + 128) & 255) / 128 - 1;
+                case 'floatbeat':
+                    return Math.max(-1, Math.min(1, value));
+                case 'funcbeat':
+                    return Math.max(-1, Math.min(1, value));
+                default:
+                    return 0;
             }
         }
         
@@ -971,28 +1023,42 @@
             const Rate = 48000; // Constant sample rate
             const userFrequency = parseInt(frequencyInput.value);
             let formula;
+            let isFuncBeat = (beatType === 'funcbeat');
+            let userFunc = null;
+
             try {
-            formula = new Function('t', 'audio', 'wild', 'return ' + editor.getValue());
-            clearError();
+                if (isFuncBeat) {
+                    let code = editor.getValue();
+                    if (lastFuncbeatCode !== code || !userFunc) {
+                        // Only re-evaluate if code changed
+                        let funcFactory = new Function(code);
+                        userFunc = funcFactory();
+                        if (typeof userFunc !== 'function') throw new Error('FuncBeat: code must return a function');
+                        lastFuncbeatCode = code;
+                        lastValidFormula = userFunc;
+                        clearError();
+                    }
+                } else {
+                    formula = new Function('t', 'audio', 'wild', 'return ' + editor.getValue());
+                    clearError();
+                }
             } catch (error) {
-            showError('Bytebeat Error: ' + error.message);
-            return;
+                showError('Bytebeat Error: ' + error.message);
+                return;
             }
-            
+
             let saveLength;
             try {
-            const saveLengthExpression = saveLengthInput.value;
-            if (saveLengthExpression.toLowerCase().includes('audio_length')) {
-                // Calculate based on audio length if specified
-                saveLength = floor(eval(saveLengthExpression.replace(/audio_length/g, audioBufferLength.toString())) / (userFrequency / Rate));
-                // Add buffer to ensure full audio is saved
-                saveLength = max(saveLength, floor(audioBufferLength / (userFrequency / Rate)));
-            } else {
-                saveLength = floor(eval(saveLengthExpression) / (userFrequency / Rate));
-            }
+                const saveLengthExpression = saveLengthInput.value;
+                if (saveLengthExpression.toLowerCase().includes('audio_length')) {
+                    saveLength = floor(eval(saveLengthExpression.replace(/audio_length/g, audioBufferLength.toString())) / (userFrequency / Rate));
+                    saveLength = max(saveLength, floor(audioBufferLength / (userFrequency / Rate)));
+                } else {
+                    saveLength = floor(eval(saveLengthExpression) / (userFrequency / Rate));
+                }
             } catch (error) {
-            showError('Invalid save length expression');
-            return;
+                showError('Invalid save length expression');
+                return;
             }
 
             const bufferL = new Float32Array(saveLength);
@@ -1000,40 +1066,49 @@
             const frequencyRatio = userFrequency / Rate;
 
             try {
-            for (let i = 0; i < saveLength; i++) {
-                const t = floor(i * frequencyRatio);
-                let result;
-                try {
-                const audioSample = [
-                    audioBufferDataL && t < audioBufferLength ? audioBufferDataL[t] : 0,
-                    audioBufferDataR && t < audioBufferLength ? audioBufferDataR[t] : 0
-                ];
-                result = formula(t, audioSample, 0);
-                if (editor.getValue().includes('wild')) {
-                    result = [
-       formula(t, audioSample, 0),
-                    formula(t, audioSample, 1)
-                    ];
-                }
-                } catch (error) {
-                handleFormulaError(error);
-                result = lastValidFormula ? lastValidFormula(t) : [0, 0];
-                }
-                let valueL, valueR;
+                for (let i = 0; i < saveLength; i++) {
+                    const t = floor(i * frequencyRatio);
+                    let valueL, valueR;
 
-                if (Array.isArray(result) && result.length === 2) {
-                valueL = processValue(result[0]);
-                valueR = processValue(result[1]);
-                } else {
-                valueL = valueR = processValue(result);
-                }
+                    if (isFuncBeat) {
+                        let out;
+                        try {
+                            out = userFunc(t / userFrequency, userFrequency);
+                        } catch (error) {
+                            out = 0;
+                        }
+                        valueL = valueR = Math.max(-1, Math.min(1, out));
+                    } else {
+                        let result;
+                        try {
+                            const audioSample = [
+                                audioBufferDataL && t < audioBufferLength ? audioBufferDataL[t] : 0,
+                                audioBufferDataR && t < audioBufferLength ? audioBufferDataR[t] : 0
+                            ];
+                            result = formula(t, audioSample, 0);
+                            if (editor.getValue().includes('wild')) {
+                                result = [
+                                    formula(t, audioSample, 0),
+                                    formula(t, audioSample, 1)
+                                ];
+                            }
+                        } catch (error) {
+                            result = [0, 0];
+                        }
+                        if (Array.isArray(result) && result.length === 2) {
+                            valueL = processValue(result[0]);
+                            valueR = processValue(result[1]);
+                        } else {
+                            valueL = valueR = processValue(result);
+                        }
+                    }
 
-                bufferL[i] = valueL;
-                bufferR[i] = valueR;
-            }
+                    bufferL[i] = valueL;
+                    bufferR[i] = valueR;
+                }
             } catch (error) {
-            showError('Bytebeat Error: ' + error.message);
-            return;
+                showError('Bytebeat Error: ' + error.message);
+                return;
             }
 
             const wavBuffer = createWavBuffer(bufferL, bufferR, Rate);
