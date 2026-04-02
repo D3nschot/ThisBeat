@@ -506,8 +506,11 @@
             const reader = new FileReader();
             reader.onload = function (e) {
                 const arrayBuffer = e.target.result;
-
-                // FIX: Ensure audioContext is initialized
+            
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+                }
+            
                 if (audioBuffer && audioBufferDataL && audioBufferDataR) {
                     for (let i = 0; i < outputL.length; i++) {
                         let t = Math.floor(phase);
